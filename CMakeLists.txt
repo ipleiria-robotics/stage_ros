@@ -18,6 +18,7 @@ set(dependencies
     tf2
     tf2_ros
     tf2_geometry_msgs
+    markers_msgs
 )
 
 find_package(ament_cmake REQUIRED)

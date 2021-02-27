@@ -42,6 +42,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_broadcaster.h>
+#include <markers_msgs/msg/markers.hpp> //Markers messages
 
 // system
 #include <stdio.h>
@@ -65,6 +66,7 @@
 #define CAMERA_INFO "camera_info"
 #define ODOM "odom"
 #define BASE_SCAN "base_scan"
+#define MARKERS "markers"
 #define BASE_POSE_GROUND_TRUTH "base_pose_ground_truth"
 #define CMD_VEL "cmd_vel"
 
@@ -83,6 +85,7 @@ private:
     std::vector<Stg::ModelCamera *> cameramodels;
     std::vector<Stg::ModelRanger *> lasermodels;
     std::vector<Stg::ModelPosition *> positionmodels;
+    std::vector<Stg::ModelFiducial *> fiducialmodels;
 
     //a structure representing a robot inthe simulator
     struct StageRobot
@@ -91,6 +94,7 @@ private:
         Stg::ModelPosition* positionmodel; //one position
         std::vector<Stg::ModelCamera *> cameramodels; //multiple cameras per position
         std::vector<Stg::ModelRanger *> lasermodels; //multiple rangers per position
+        std::vector<Stg::ModelFiducial *> fiducialmodels;
 
         //ros publishers
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub; //one odom
@@ -100,6 +104,7 @@ private:
         std::vector<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> depth_pubs; //multiple depths
         std::vector<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr> camera_pubs; //multiple cameras
         std::vector<rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr> laser_pubs; //multiple lasers
+        std::vector<rclcpp::Publisher<markers_msgs::msg::Markers>::SharedPtr> fiducial_pubs; // multiple fiducial detectors
 
         rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmdvel_sub; //one cmd_vel subscriber
     };
@@ -248,6 +253,8 @@ StageNode::ghfunc(Stg::Model* mod, StageNode* node)
   if (dynamic_cast<Stg::ModelCamera *>(mod)) {
      node->cameramodels.push_back(dynamic_cast<Stg::ModelCamera *>(mod));
   }
+  if (dynamic_cast<Stg::ModelFiducial*>(mod))
+     node->fiducialmodels.push_back(dynamic_cast<Stg::ModelFiducial *>(mod));
 }
 
 
@@ -355,6 +362,16 @@ StageNode::SubscribeModels()
             }
         }
 
+        for (size_t s = 0; s < this->fiducialmodels.size(); s++)
+        {
+            if (this->fiducialmodels[s] and this->fiducialmodels[s]->Parent() == new_robot->positionmodel)
+            {
+                new_robot->fiducialmodels.push_back(this->fiducialmodels[s]);
+                this->fiducialmodels[s]->Subscribe();
+                RCLCPP_INFO(n_->get_logger(), "Subscribed to Fidutial model \"%s\"", this->fiducialmodels[s]->Token() ); 
+            }
+        }
+
         // TODO - print the topic names nicely as well
         RCLCPP_INFO(n_->get_logger(), "Robot %s provided %lu rangers and %lu cameras",
             new_robot->positionmodel->Token(),
@@ -393,6 +410,15 @@ StageNode::SubscribeModels()
                 new_robot->depth_pubs.push_back(n_->create_publisher<sensor_msgs::msg::Image>(mapName(DEPTH, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
                 new_robot->camera_pubs.push_back(n_->create_publisher<sensor_msgs::msg::CameraInfo>(mapName(CAMERA_INFO, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
             }
+        }
+
+        for (size_t s = 0;  s < new_robot->fiducialmodels.size(); ++s)
+        {
+            if (new_robot->fiducialmodels.size() == 1)
+                new_robot->fiducial_pubs.push_back(n_->create_publisher<markers_msgs::msg::Markers>(mapName(MARKERS, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+            else
+                new_robot->fiducial_pubs.push_back(n_->create_publisher<markers_msgs::msg::Markers>(mapName(MARKERS, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+
         }
 
         this->robotmodels_.push_back(new_robot);
@@ -766,6 +792,36 @@ StageNode::WorldCallback()
 
             }
 
+        }
+
+        // fidutials
+        for (size_t s = 0; s < robotmodel->fiducialmodels.size(); ++s)
+        {
+          Stg::ModelFiducial * fidutialmodel = robotmodel->fiducialmodels[s];
+          std::vector<Stg::ModelFiducial::Fiducial> detectedMarkers = fidutialmodel->GetFiducials();
+
+          if (robotmodel->fiducial_pubs[s]->get_subscription_count() > 0 ) //&& detectedMarkers.size() >= 0 )
+          {
+            markers_msgs::msg::Markers msg;
+            if (robotmodel->fiducialmodels.size() > 1)
+              msg.header.frame_id = mapName(MARKERS, r, s, static_cast<Stg::Model*>(robotmodel->positionmodel));
+            else
+              msg.header.frame_id = mapName(MARKERS, r,static_cast<Stg::Model*>(robotmodel->positionmodel));
+            msg.header.stamp = sim_time;
+            
+            msg.num_markers = detectedMarkers.size();
+            msg.id.resize(detectedMarkers.size());
+            msg.bearing.resize(detectedMarkers.size());
+            msg.range.resize(detectedMarkers.size());
+
+            for(uint i=0; i < detectedMarkers.size(); i++)
+            {
+              msg.id[i] = detectedMarkers[i].id;
+              msg.bearing[i] = detectedMarkers[i].bearing;
+              msg.range[i] = detectedMarkers[i].range;
+            }
+            robotmodel->fiducial_pubs[s]->publish(msg);
+          }
         }
     }
 
